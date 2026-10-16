@@ -1,0 +1,11 @@
+import { useState } from 'react';
+import { ArrowUpRight, CheckCheck, Clock3, FolderOpen, MessageSquare, Plus } from 'lucide-react';
+import { formatDate } from '../api';
+import { Button, Empty, PageHeader, SearchInput, Status } from '../components/UI';
+
+export default function Tasks({ state, navigate }) {
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState('all');
+  const tasks = [...state.tasks].filter(task => (filter === 'archived' ? task.archived : !task.archived) && (filter !== 'running' || ['running', 'awaiting_approval'].includes(task.status)) && (filter !== 'completed' || task.status === 'completed') && task.title.toLowerCase().includes(query.toLowerCase())).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return <div className="page"><PageHeader title="任务" description="每一次想法，都有迹可循。"><Button icon={Plus} onClick={() => navigate('home')}>新建任务</Button></PageHeader><div className="page-tools"><div className="tabs">{[['all', '全部'], ['running', '进行中'], ['completed', '已完成'], ['archived', '已归档']].map(([id, name]) => <button className={filter === id ? 'active' : ''} key={id} onClick={() => setFilter(id)}>{name}</button>)}</div><SearchInput value={query} onChange={setQuery} placeholder="搜索任务" /></div>{tasks.length ? <div className="task-table"><div className="table-heading"><span>任务</span><span>工作空间</span><span>状态</span><span>最近更新</span><span /></div>{tasks.map(task => <button className="task-table-row" key={task.id} onClick={() => navigate(`task/${task.id}`)}><span className="task-name"><span className={`task-type-icon ${task.scene || 'work'}`}><MessageSquare size={17} /></span><span>{task.title}<small>{task.messages?.find(message => message.role === 'user')?.content?.slice(0, 65)}</small></span></span><span className="workspace-cell"><FolderOpen size={14} />{state.workspaces.find(item => item.id === task.workspaceId)?.name || '工作空间'}</span><Status value={task.status} /><time>{formatDate(task.updatedAt)}</time><ArrowUpRight size={15} /></button>)}</div> : <Empty icon={query ? MessageSquare : filter === 'completed' ? CheckCheck : Clock3} title={query ? '没有找到相关任务' : '还没有任务'} description={query ? '换一个关键词试试。' : '创建一个任务，让 OpenBuddy 和你一起完成工作。'} action={!query && <Button onClick={() => navigate('home')} icon={Plus}>创建第一个任务</Button>} />}</div>;
+}

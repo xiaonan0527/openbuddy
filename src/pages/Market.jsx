@@ -1,0 +1,59 @@
+import { useMemo, useState } from 'react';
+import { Bot, Cable, Check, ChevronRight, Code2, Pencil, Plug, Plus, ShieldCheck, Sparkles, Trash2, Wrench } from 'lucide-react';
+import { patch, post, remove } from '../api';
+import { Button, Empty, Field, IconButton, InlineError, Modal, PageHeader, SearchInput, Select, Status, Toggle } from '../components/UI';
+
+const KINDS = { experts: { label: '专家', icon: Bot, create: '创建专家', description: '为不同工作，准备各有所长的伙伴。' }, skills: { label: '技能', icon: Sparkles, create: '创建技能', description: '把常用的方法，沉淀成可复用的工作流程。' }, connectors: { label: '连接器', icon: Cable, create: '添加连接器', description: '通过 MCP 连接你的工具与数据。外部连接需要主动配置。' } };
+
+function EditForm({ kind, item, state, onClose, onSave }) {
+  const [form, setForm] = useState({ name: item?.name || '', description: item?.description || '', category: item?.category || '自定义', instructions: item?.instructions || '', skillIds: item?.skillIds || [], type: item?.type || 'http', url: item?.url || '', command: item?.command || '', args: (item?.args || []).join('\n') });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const set = (key, value) => setForm(previous => ({ ...previous, [key]: value }));
+  async function save(event) {
+    event.preventDefault(); setBusy(true); setError('');
+    try {
+      const body = kind === 'connectors' ? { name: form.name, description: form.description, type: form.type, ...(form.type === 'http' ? { url: form.url } : { command: form.command, args: form.args.split('\n').map(arg => arg.trim()).filter(Boolean) }) } : { name: form.name, description: form.description, category: form.category, instructions: form.instructions, ...(kind === 'experts' ? { skillIds: form.skillIds } : {}) };
+      if (item?.id) await patch(`/${kind}/${item.id}`, body); else await post(`/${kind}`, body);
+      await onSave(); onClose();
+    } catch (problem) { setError(problem.message); }
+    finally { setBusy(false); }
+  }
+  return <Modal title={item ? `编辑${KINDS[kind].label}` : KINDS[kind].create} onClose={onClose} wide={kind !== 'connectors'}><form className="form" onSubmit={save}><Field label="名称"><input autoFocus required value={form.name} onChange={event => set('name', event.target.value)} placeholder={kind === 'experts' ? '例如：研究顾问' : kind === 'skills' ? '例如：周报写作' : '例如：本地文件 MCP'} /></Field><Field label="描述"><input value={form.description} onChange={event => set('description', event.target.value)} placeholder="简短说明用途" /></Field>{kind === 'connectors' ? <><Field label="连接方式"><Select value={form.type} onChange={event => set('type', event.target.value)}><option value="http">HTTP / Streamable HTTP</option><option value="stdio">本地命令 / Stdio</option></Select></Field>{form.type === 'http' ? <Field label="MCP 服务地址" hint="保存配置不会自动连接。连接后，智能体使用工具仍需你的批准。"><input type="url" required value={form.url} onChange={event => set('url', event.target.value)} placeholder="https://example.com/mcp" /></Field> : <><Field label="命令" hint="此命令将在点击连接时启动。仅添加你信任的程序。"><input required value={form.command} onChange={event => set('command', event.target.value)} placeholder="npx" /></Field><Field label="参数" hint="每行一个参数。不在此处填写密钥。"><textarea rows={4} value={form.args} onChange={event => set('args', event.target.value)} placeholder={'-y\n@modelcontextprotocol/server-example'} /></Field></>}</> : <><Field label="分类"><input required value={form.category} onChange={event => set('category', event.target.value)} /></Field><Field label={kind === 'experts' ? '专家工作说明' : '技能说明'} hint="此内容会作为任务上下文传给模型，请写清目标、方法和交付标准。"><textarea required rows={9} value={form.instructions} onChange={event => set('instructions', event.target.value)} placeholder="你擅长什么、如何工作、输出什么…" /></Field>{kind === 'experts' && <Field label="关联技能"><div className="checkbox-list">{state.skills.filter(skill => skill.enabled).map(skill => <label key={skill.id}><input type="checkbox" checked={form.skillIds.includes(skill.id)} onChange={event => set('skillIds', event.target.checked ? [...form.skillIds, skill.id] : form.skillIds.filter(id => id !== skill.id))} />{skill.name}</label>)}</div></Field>}</>}<InlineError>{error}</InlineError><div className="form-actions"><Button variant="secondary" onClick={onClose}>取消</Button><Button type="submit" busy={busy}>保存{KINDS[kind].label}</Button></div></form></Modal>;
+}
+
+function Detail({ kind, item, state, onClose, onEdit, onDelete, refresh, notify, navigate }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function connect() {
+    setBusy(true); setError('');
+    try { const result = await post(`/connectors/${item.id}/connect`); await refresh(); if (result.error) setError(result.error); else notify('连接器连接完成'); }
+    catch (problem) { setError(problem.message); }
+    finally { setBusy(false); }
+  }
+  const Icon = KINDS[kind].icon;
+  return <Modal title={item.name} description={item.description} onClose={onClose} wide><div className="detail-body"><div className="detail-metadata"><span className={`market-icon ${kind}`}><Icon size={25} /></span><div><span className="category-label">{item.category || item.type || KINDS[kind].label}</span>{item.builtin && <span className="builtin-label"><ShieldCheck size={12} />内置</span>}{kind === 'connectors' && <Status value={item.status} />}</div></div>{kind === 'connectors' ? <><dl className="definition-list"><div><dt>协议</dt><dd>{item.type === 'stdio' ? '本地进程 · Stdio' : 'HTTP MCP'}</dd></div><div><dt>{item.type === 'stdio' ? '命令' : '服务地址'}</dt><dd><code>{item.type === 'stdio' ? [item.command, ...(item.args || [])].join(' ') : item.url}</code></dd></div><div><dt>可用工具</dt><dd>{item.toolCount || item.tools?.length || 0} 个</dd></div></dl>{item.error && <InlineError>{item.error}</InlineError>}{item.tools?.length > 0 && <div className="connector-tools"><h3>已发现的工具</h3>{item.tools.map((tool, i) => <div key={tool.name || i}><Wrench size={14} /><span><code>{tool.name}</code><p>{tool.description}</p></span></div>)}</div>}<p className="small-note">本地 MCP 进程不会继承模型密钥。工具调用由任务中的审批控制。</p></> : <><h3 className="section-label">{kind === 'experts' ? '工作方式' : '技能说明'}</h3><pre className="instructions-preview">{item.instructions}</pre>{kind === 'experts' && item.skillIds?.length > 0 && <div className="linked-skills">{item.skillIds.map(id => <span key={id}><Sparkles size={13} />{state.skills.find(skill => skill.id === id)?.name || id}</span>)}</div>}</>}<InlineError>{error}</InlineError><div className="detail-footer"><div>{!item.builtin && <IconButton icon={Trash2} label={`删除${KINDS[kind].label}`} onClick={() => onDelete(item)} />}{kind !== 'connectors' && <Button variant="secondary" icon={Pencil} onClick={() => onEdit(item)}>编辑</Button>}</div><div>{kind === 'connectors' ? <Button icon={Plug} busy={busy} onClick={connect}>连接并发现工具</Button> : kind === 'skills' ? <Button variant={item.enabled ? 'secondary' : 'primary'} onClick={async () => { try { await patch(`/skills/${item.id}`, { enabled: !item.enabled }); await refresh(); notify(item.enabled ? '技能已停用' : '技能已启用'); onClose(); } catch (problem) { setError(problem.message); } }}>{item.enabled ? '停用技能' : '启用技能'}</Button> : <Button onClick={() => { onClose(); navigate(`home?expert=${item.id}`); }}>开始新任务</Button>}</div></div></div></Modal>;
+}
+
+export default function Market({ state, refresh, notify, navigate }) {
+  const [kind, setKind] = useState('experts');
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('全部');
+  const [editing, setEditing] = useState(null);
+  const [detailId, setDetailId] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const all = state[kind] || [];
+  const categories = ['全部', ...new Set(all.map(item => item.category || (item.type === 'stdio' ? '本地连接器' : item.type === 'http' ? '远程连接器' : '其他')))];
+  const items = all.filter(item => `${item.name} ${item.description}`.toLowerCase().includes(query.toLowerCase()) && (category === '全部' || (item.category || (item.type === 'stdio' ? '本地连接器' : '远程连接器')) === category));
+  const detail = all.find(item => item.id === detailId);
+  const KindIcon = KINDS[kind].icon;
+  async function deleteItem() {
+    setBusy(true); setError('');
+    try { await remove(`/${kind}/${deleting.id}`); await refresh(); setDeleting(null); setDetailId(null); notify(`${KINDS[kind].label}已删除`); }
+    catch (problem) { setError(problem.message); }
+    finally { setBusy(false); }
+  }
+  return <div className="page market-page"><PageHeader title="专家、技能与连接器" description="让每一种能力，都找到自己的位置。"><Button icon={Plus} onClick={() => setEditing({})}>{KINDS[kind].create}</Button></PageHeader><div className="market-kind-tabs">{Object.entries(KINDS).map(([key, value]) => <button key={key} className={key === kind ? 'active' : ''} onClick={() => { setKind(key); setCategory('全部'); setQuery(''); }}><value.icon size={18} />{value.label}<span>{state[key]?.length || 0}</span></button>)}</div><div className="market-intro"><h2>{kind === 'experts' ? '你的专属专家团队' : kind === 'skills' ? '让好方法，随时可用' : '连接工作所需的工具'}</h2><p>{KINDS[kind].description}</p></div><div className="page-tools"><div className="filter-chips">{categories.map(item => <button className={category === item ? 'active' : ''} key={item} onClick={() => setCategory(item)}>{item}</button>)}</div><SearchInput value={query} onChange={setQuery} placeholder={`搜索${KINDS[kind].label}`} /></div>{items.length ? <div className="market-grid">{items.map(item => <div className="market-card" key={item.id}><button className="market-card-main" onClick={() => setDetailId(item.id)}><span className={`market-icon ${kind}`}><KindIcon size={23} strokeWidth={1.7} /></span><div className="market-card-title"><h3>{item.name}</h3><span>{item.category || (item.type === 'stdio' ? '本地 MCP' : 'HTTP MCP')}</span></div><p>{item.description || (kind === 'connectors' ? item.url || item.command : '查看工作说明与使用方式')}</p></button><div className="market-card-bottom">{kind === 'skills' ? <><span>{item.builtin ? '内置技能' : '自定义技能'}</span><Toggle checked={item.enabled} label={`${item.enabled ? '停用' : '启用'} ${item.name}`} onChange={async enabled => { try { await patch(`/skills/${item.id}`, { enabled }); await refresh(); } catch (problem) { notify(problem.message); } }} /></> : kind === 'connectors' ? <><Status value={item.status} /><button onClick={() => setDetailId(item.id)}>管理 <ChevronRight size={13} /></button></> : <><span>{item.skillIds?.length ? `${item.skillIds.length} 个关联技能` : item.builtin ? '内置专家' : '自定义专家'}</span><button onClick={() => setDetailId(item.id)}>查看 <ChevronRight size={13} /></button></>}</div></div>)}</div> : <Empty icon={KindIcon} title={query ? '没有找到匹配内容' : `还没有${KINDS[kind].label}`} description={query ? '试试其他关键词或分类。' : `添加你的第一个${KINDS[kind].label}，拓展工作能力。`} action={!query && <Button icon={Plus} onClick={() => setEditing({})}>{KINDS[kind].create}</Button>} />}{kind === 'connectors' && <div className="info-banner"><ShieldCheck size={19} /><div><strong>由你掌控每一次连接</strong><p>添加配置不会自动连接。点击连接才会访问服务或启动进程，智能体调用工具时仍会请求批准。</p></div></div>}{editing && <EditForm kind={kind} item={editing.id ? editing : null} state={state} onClose={() => setEditing(null)} onSave={async () => { await refresh(); notify(`${KINDS[kind].label}已保存`); }} />}{detail && !editing && !deleting && <Detail kind={kind} item={detail} state={state} onClose={() => setDetailId(null)} onEdit={setEditing} onDelete={setDeleting} refresh={refresh} notify={notify} navigate={navigate} />}{deleting && <Modal title={`删除${KINDS[kind].label}？`} description={`「${deleting.name}」将从你的列表中移除。`} onClose={() => setDeleting(null)}><div className="form"><InlineError>{error}</InlineError><div className="form-actions"><Button variant="secondary" onClick={() => setDeleting(null)}>取消</Button><Button variant="danger" busy={busy} onClick={deleteItem}>删除</Button></div></div></Modal>}</div>;
+}

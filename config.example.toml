@@ -1,0 +1,15 @@
+# Copy to config.local.toml for source builds, or to
+# ~/.config/openbuddy/config.toml for both source and desktop builds.
+# Replace all placeholders locally. Never commit your completed config.
+model = "YOUR_MODEL_ID"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "My Responses-compatible provider"
+base_url = "https://api.example.com/v1"
+wire_api = "responses"
+env_key = "OPENBUDDY_API_KEY"
+
+# For desktop launches that do not inherit a terminal environment, you may
+# replace env_key above with the line below in your PRIVATE local file only:
+# experimental_bearer_token = "YOUR_API_KEY"

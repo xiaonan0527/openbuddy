@@ -1,0 +1,76 @@
+{
+  "name": "openbuddy-local",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Independent local AI workspace reconstructed from observed WorkBuddy workflows",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"node --watch server/index.js\" \"vite --host 127.0.0.1\"",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "desktop": "npm run build && electron .",
+    "package:mac": "npm run build && electron-builder --mac dir --arm64",
+    "test": "node --test tests/*.test.js",
+    "check:public": "node scripts/check-public-files.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "docx": "^9.5.0",
+    "exceljs": "^4.4.0",
+    "express": "^5.1.0",
+    "lucide-react": "^0.468.0",
+    "mammoth": "^1.9.0",
+    "pptxgenjs": "^4.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "smol-toml": "^1.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.5.0",
+    "concurrently": "^9.1.0",
+    "electron": "^44.7.2",
+    "electron-builder": "^26.15.3",
+    "vite": "^6.3.0"
+  },
+  "build": {
+    "appId": "local.openbuddy.desktop",
+    "productName": "OpenBuddy",
+    "directories": {
+      "output": "release-final"
+    },
+    "files": [
+      "dist/**/*",
+      "server/**/*",
+      "desktop/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "icon": "public/icon.icns",
+      "category": "public.app-category.productivity",
+      "identity": null
+    }
+  },
+  "overrides": {
+    "image-size": "^2.0.4",
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
+  },
+  "author": "OpenBuddy contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xiaonan0527/openbuddy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xiaonan0527/openbuddy/issues"
+  },
+  "homepage": "https://github.com/xiaonan0527/openbuddy#readme",
+  "engines": {
+    "node": ">=22"
+  }
+}
