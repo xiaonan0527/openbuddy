@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createAgent } from '../server/agent.js';
 import { requestResponse, publicProvider } from '../server/provider.js';
+import { Store } from '../server/store.js';
 
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'openbuddy-agent-test-'));
 const previousHome = process.env.CODEX_HOME, originalFetch = globalThis.fetch;
@@ -77,6 +78,74 @@ test('stopping pending approval never executes command and exits cleanly', async
   globalThis.fetch = async () => sse([call('run_shell', { command: 'touch should-not-exist' })]);
   const run = agent.run(task.id); const approval = await pending(task); agent.stop(task.id); await run;
   assert.equal(task.status, 'stopped'); assert.equal(approval.status, 'denied'); assert.equal(fs.existsSync(path.join(workspacePath, 'should-not-exist')), false);
+});
+
+test('unknown side effects require an explicit skip or retry before continuation', async () => {
+  const { agent, task } = setup();
+  const callItem = call('run_shell', { command: 'touch duplicate-side-effect' });
+  const event = { id: 'uncertain', type: 'tool', callId: callItem.call_id, tool: callItem.name, args: JSON.parse(callItem.arguments), status: 'unknown', message: '结果未知' };
+  callItem.eventId = event.id;
+  task.events.push(event); task.status = 'stopped';
+  task.runState = { input: [{ role: 'user', content: '完成工作' }, callItem], pendingCalls: [callItem], cursor: 0, userCount: 1 };
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    assert.match(body.input.at(-1).output, /用户检查后选择跳过/);
+    return sse([message('已按你的选择跳过这次操作')]);
+  };
+  await assert.rejects(agent.run(task.id), /结果未知/);
+  agent.resolveUnknown(task.id, event.id, 'skip');
+  await agent.run(task.id);
+  assert.equal(task.status, 'completed'); assert.equal(event.status, 'skipped');
+});
+
+test('missing deliverable blocks completed status', async () => {
+  const { agent, task } = setup(); task.artifactPaths.push('missing.md');
+  globalThis.fetch = async () => sse([message('已完成')]);
+  await agent.run(task.id);
+  assert.equal(task.status, 'failed'); assert.match(task.error, /产物验收失败/);
+});
+
+test('retry of an unknown write still requires a fresh approval and honors refusal', async () => {
+  const { agent, task, workspacePath } = setup();
+  const item = { ...call('write_file', { path: 'retry.md', content: 'test' }), eventId: 'retry-event' };
+  task.events.push({ id: item.eventId, type: 'tool', tool: 'write_file', status: 'unknown' });
+  task.runState = { input: [call('write_file', { path: 'retry.md', content: 'test' })], pendingCalls: [item], cursor: 0 };
+  globalThis.fetch = async () => sse([message('操作已拒绝')]);
+  agent.resolveUnknown(task.id, item.eventId, 'retry');
+  const run = agent.run(task.id), consent = await pending(task);
+  assert.equal(fs.existsSync(path.join(workspacePath, 'retry.md')), false);
+  agent.approve(task.id, consent.requestId, false); await run;
+  assert.equal(fs.existsSync(path.join(workspacePath, 'retry.md')), false);
+  assert.equal(task.events[0].status, 'denied');
+});
+
+test('persisted completed tool result resumes after restart without rewriting the file', async () => {
+  const root = fs.mkdtempSync(path.join(temporary, 'persisted-'));
+  let store = new Store(root), workspace = store.state.workspaces[0];
+  const task = { id: 'persisted', title: 'resume', workspaceId: workspace.id, mode: 'default', skillIds: [], messages: [{ id: 'user', role: 'user', content: 'write then resume' }], events: [], artifactPaths: [] };
+  store.state.tasks = [task]; store.state.settings.maxSteps = 1;
+  const connectors = { getTools: () => [] };
+  let agent = createAgent({ store, notify() {}, connectors });
+  globalThis.fetch = async () => sse([call('write_file', { path: 'saved.md', content: 'first write' })]);
+  const run = agent.run(task.id), consent = await pending(task); agent.approve(task.id, consent.requestId, true); await run;
+  assert.equal(task.status, 'failed'); assert.match(task.error, /步数上限/);
+  fs.writeFileSync(path.join(workspace.path, 'saved.md'), 'edited after stop');
+  store = new Store(root); agent = createAgent({ store, notify() {}, connectors });
+  globalThis.fetch = async (_url, options) => {
+    const input = JSON.parse(options.body).input;
+    assert.ok(input.some(i => i.type === 'function_call_output' && JSON.parse(i.output).path === 'saved.md'));
+    return sse([message('done')]);
+  };
+  await agent.run(task.id);
+  assert.equal(store.state.tasks[0].status, 'completed');
+  assert.equal(fs.readFileSync(path.join(workspace.path, 'saved.md'), 'utf8'), 'edited after stop');
+});
+
+test('a remaining plan prevents a model final answer from completing the task', async () => {
+  const { agent, task } = setup(); task.plan = [{ id: 'unfinished', title: '未执行', status: 'pending' }];
+  globalThis.fetch = async () => sse([message('我已完成全部工作')]);
+  await agent.run(task.id);
+  assert.equal(task.status, 'failed'); assert.match(task.error, /计划仍未完成/);
 });
 
 test('truncated model stream fails rather than recording fake success', async () => {

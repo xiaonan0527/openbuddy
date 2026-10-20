@@ -18,9 +18,16 @@ export class Store {
       const seed = createSeed({ workspacePath });
       for (const key of Object.keys(seed)) if (!(key in this.state)) this.state[key] = seed[key];
       this.state.capabilities = seed.capabilities;
+      for (const task of this.state.tasks) for (const step of task.plan || []) step.id ||= createId();
       for (const task of this.state.tasks) if (['running', 'awaiting_approval'].includes(task.status)) {
         task.status = 'stopped'; task.error = '应用重启，任务已停止。可以重新发送消息继续。';
+        const partial = task.messages?.find(m => m.id === task.runState?.streamingMessageId);
+        if (partial) partial.interrupted = true;
         for (const event of task.events || []) if (event.type === 'approval' && event.status === 'pending') event.status = 'denied';
+        for (const event of task.events || []) if (event.type === 'tool' && event.status === 'running') {
+          event.status = event.started !== false ? 'unknown' : 'queued';
+          event.message = `${event.tool || '工具'}：${event.started !== false ? '应用重启时执行结果未知，请检查后选择重试或跳过。' : '操作尚未开始，继续执行时重新审批。'}`;
+        }
       }
       this.state.connectors.forEach(c => { c.status = 'disconnected'; c.toolCount = 0; c.tools = []; });
     } else this.state = createSeed({ workspacePath });

@@ -55,10 +55,14 @@ export function createApp({ dataDir = process.env.OPENBUDDY_DATA_DIR || path.joi
   app.post('/api/tasks', (req, res) => res.status(201).json(createTask(req.body)));
   app.post('/api/tasks/:id/messages', (req, res) => {
     const task = getTask(req.params.id); if (agent.active(task.id)) return res.status(409).json({ error: '任务正在执行，请先停止或等待完成' });
+    if (task.events.some(e => e.status === 'unknown')) return res.status(409).json({ error: '请先处理执行结果未知的操作' });
     task.messages.push({ id: createId(), role: 'user', content: requiredString(req.body.content, '消息', 100000), createdAt: now() }); task.updatedAt = now();
     store.save(); dispatch(task.id); res.json(task);
   });
-  app.post('/api/tasks/:id/run', (req, res) => { const task = getTask(req.params.id); if (agent.active(task.id)) return res.status(409).json({ error: '任务已在运行' }); dispatch(task.id); res.json(task); });
+  app.post('/api/tasks/:id/run', (req, res) => { const task = getTask(req.params.id); if (agent.active(task.id)) return res.status(409).json({ error: '任务已在运行' }); if (task.events.some(e => e.status === 'unknown')) return res.status(409).json({ error: '请先处理执行结果未知的操作' }); dispatch(task.id); res.json(task); });
+  app.post('/api/tasks/:id/recovery', (req, res) => {
+    getTask(req.params.id); agent.resolveUnknown(req.params.id, requiredString(req.body.eventId, '工具事件编号', 200), req.body.decision); res.json({ ok: true });
+  });
   app.post('/api/tasks/:id/stop', (req, res) => { getTask(req.params.id); agent.stop(req.params.id); res.json({ ok: true }); });
   app.post('/api/tasks/:id/approval', (req, res) => {
     getTask(req.params.id); if (typeof req.body.allow !== 'boolean') throw new Error('审批结果无效');

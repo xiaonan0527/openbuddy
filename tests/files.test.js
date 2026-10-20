@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveWorkspacePath, readDirectory, writeText, readText, createOffice, previewFile } from '../server/files.js';
+import { verifyArtifacts } from '../server/runtime.js';
 
 function temporary(t) { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openbuddy-files-')); t.after(() => fs.rmSync(root, { recursive: true, force: true })); return { id: 'test', path: root }; }
 test('blocks traversal, absolute paths, credential files and symlinks', t => {
@@ -37,4 +38,12 @@ test('generates an editable PPTX ZIP container', async t => {
 });
 test('does not overwrite workspace root or write mismatched Office format', async t => {
   const workspace = temporary(t); await assert.rejects(writeText(workspace, '.', 'bad')); await assert.rejects(createOffice(workspace, { format: 'docx', path: 'fake.txt' }));
+});
+
+test('artifact gate validates all generated Office formats and rejects a corrupted PPTX', async t => {
+  const workspace = temporary(t);
+  for (const format of ['docx', 'xlsx', 'pptx']) await createOffice(workspace, { format, path: `file.${format}`, title: '验收', rows: [['内容']], sections: [{ text: '内容' }] });
+  assert.equal((await verifyArtifacts(workspace, ['file.docx', 'file.xlsx', 'file.pptx'])).status, 'passed');
+  fs.writeFileSync(path.join(workspace.path, 'file.pptx'), 'not an Office container');
+  assert.equal((await verifyArtifacts(workspace, ['file.pptx'])).status, 'failed');
 });
