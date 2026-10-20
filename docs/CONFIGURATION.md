@@ -1,6 +1,21 @@
 # 模型配置
 
-OpenBuddy 需要支持 Responses API 的模型服务。公开仓库仅包含模板；API 地址、模型与密钥都需要使用者自行填写。
+OpenBuddy 支持 Responses API 和 OpenAI Chat Completions 兼容接口。设置页可保存多个模型供应商；公开仓库仅包含配置模板，不含私人 API 地址、密钥或本机模型清单。
+
+## 添加供应商
+
+进入“设置 → 模型 → 添加模型”，选智谱、Kimi 中国版、MiniMax 中国版、DeepSeek 或自定义兼容服务。填 Base URL、该地址对应的 API Key 和模型 ID。先测试连接，再保存并切换。可以尝试获取账号可用的模型列表；接口不可用时手动输入模型 ID。
+
+预设地址仅供填写起点。Coding Plan/Token 套餐与普通 API 套餐可能采用不同地址和凭据；请以你所购套餐的供应商控制台文档为准。任务会绑定创建时使用的供应商和模型，切换默认供应商只影响新任务。
+
+新增密钥保存在应用本机数据目录的 `model-providers.json`，文件权限为 `0600`，不返回给前端，也不会写到 `state.json` 或仓库。此文件采用本机权限保护，当前不使用系统钥匙串或额外静态加密。可从模型设置删除配置，删除后绑定该配置的未完成任务无法继续运行。删除配置不撤销供应商侧的密钥，如需吊销请到供应商控制台操作。
+
+预设的地址和示例模型名称核对自下列文档；供应商模型上架与账户权限可能变化，可在添加页获取实际列表或覆盖 ID：
+
+- [智谱 API 文档](https://open.bigmodel.cn/dev/api)
+- [Kimi Chat Completions](https://platform.moonshot.cn/docs/api/chat)
+- [MiniMax OpenAI 兼容接口](https://platform.minimaxi.com/docs/api-reference/text-openai-api)
+- [DeepSeek 思考模式与工具调用](https://api-docs.deepseek.com/guides/thinking_mode/)
 
 ## TOML 配置
 
@@ -24,7 +39,7 @@ experimental_bearer_token = "YOUR_API_KEY"
 
 将占位符替换为自己的值。Unix 系统建议仅允许当前用户读取配置，例如 `chmod 600 config.local.toml`。不要修改或提交示例文件来保存真实值。
 
-`base_url` 应为 API 基础路径，不要在 URL 中放用户名、密码、查询参数或片段。应用会添加 `/responses`，也接受末尾已包含 `/responses` 的地址。模型必须在服务端实际可用；仓库不预置某个私人服务商或模型。
+`base_url` 应为 API 基础路径，不要在 URL 中放用户名、密码、查询参数或片段。`wire_api = "responses"` 时应用添加 `/responses`；`wire_api = "chat_completions"` 时添加 `/chat/completions`。也接受已经包含对应完整路径的地址。模型必须在服务端实际可用；仓库不预置某个私人服务商或模型。
 
 ## 优先级
 

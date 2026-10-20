@@ -30,3 +30,42 @@ test('API lifecycle persists state, enforces local request boundaries and defaul
   const invalidWorkspace = await call('/workspaces', 'POST', { name: '禁止主目录', path: os.homedir() }); assert.equal(invalidWorkspace.status, 400);
   await call(`/tasks/${task.id}`, 'DELETE'); assert.equal((await call('/state')).body.tasks.length, 0);
 });
+
+test('managed model providers store keys locally without exposing them through API or state', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openbuddy-model-vault-'));
+  const runtime = await startServer({ dataDir, port: 0 });
+  const originalFetch = globalThis.fetch;
+  t.after(async () => { globalThis.fetch = originalFetch; await runtime.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
+  const base = `http://127.0.0.1:${runtime.port}`;
+  async function call(route, method = 'GET', body) { const res = await originalFetch(`${base}/api${route}`, { method, headers: { 'Content-Type': 'application/json', 'X-OpenBuddy-Request': '1' }, body: body === undefined ? undefined : JSON.stringify(body) }); return { status: res.status, body: await res.json() }; }
+  const secret = 'fixture-domestic-model-key';
+  const added = await call('/providers', 'POST', { preset: 'kimi-cn', apiKey: secret, model: 'kimi-test' });
+  assert.equal(added.status, 201); assert.equal(JSON.stringify(added.body).includes(secret), false);
+  await call(`/providers/${added.body.id}/activate`, 'POST');
+  const [state, providers] = await Promise.all([call('/state'), call('/providers')]);
+  assert.equal(state.body.provider.protocol, 'chat_completions');
+  assert.equal(JSON.stringify(state.body).includes(secret), false); assert.equal(JSON.stringify(providers.body).includes(secret), false);
+  assert.equal(providers.body.providers[0].hasApiKey, true);
+  assert.equal((fs.statSync(path.join(dataDir, 'model-providers.json')).mode & 0o777), 0o600);
+  assert.equal(fs.readFileSync(path.join(dataDir, 'state.json'), 'utf8').includes(secret), false);
+  globalThis.fetch = async (url, options) => {
+    assert.equal(options.headers.Authorization, `Bearer ${secret}`);
+    if (String(url).endsWith('/models')) return new Response(JSON.stringify({ data: [{ id: 'kimi-test' }, { id: 'kimi-other' }] }), { headers: { 'content-type': 'application/json' } });
+    assert.match(String(url), /api\.moonshot\.cn\/v1\/chat\/completions$/);
+    return new Response('data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  };
+  const modelList = await call('/providers/models', 'POST', { preset: 'kimi-cn', name: 'Kimi', baseUrl: 'https://api.moonshot.cn/v1', apiKey: secret, model: '' });
+  assert.deepEqual(modelList.body.models, ['kimi-test', 'kimi-other']);
+  const connection = await call('/provider/test', 'POST', {}); assert.equal(connection.body.ok, true);
+  const task = await call('/tasks', 'POST', { prompt: 'pinned provider', start: false });
+  assert.equal(task.body.providerId, added.body.id); assert.equal(task.body.model, 'kimi-test');
+  await call('/providers/local', 'POST');
+  assert.equal(runtime.store.state.tasks.find(item => item.id === task.body.id).providerId, added.body.id);
+  const blockedEdit = await call(`/providers/${added.body.id}`, 'PATCH', { baseUrl: 'https://different-provider.example/v1', apiKey: '' });
+  assert.equal(blockedEdit.status, 400); assert.match(blockedEdit.body.error, /重新输入/);
+  const edit = await call(`/providers/${added.body.id}`, 'PATCH', { name: 'Kimi renamed', model: 'kimi-other', apiKey: '' });
+  assert.equal(edit.status, 200); assert.equal(JSON.stringify(edit.body).includes(secret), false);
+  assert.equal(new Store(dataDir).modelProviders.providers[0].apiKey, secret);
+  await call(`/providers/${added.body.id}`, 'DELETE');
+  assert.equal(runtime.store.modelProviders.providers.length, 0);
+});

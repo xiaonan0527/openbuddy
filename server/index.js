@@ -5,7 +5,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Store, createId, now } from './store.js';
 import { createAgent } from './agent.js';
-import { publicProvider, requestResponse } from './provider.js';
+import { publicProvider, publicManagedProviders, PROVIDER_PRESETS, loadProvider, requestResponse, redactSecrets } from './provider.js';
 import { createConnectors } from './connectors.js';
 import { readDirectory, readText, writeText, resolveWorkspacePath, previewFile } from './files.js';
 
@@ -40,12 +40,74 @@ export function createApp({ dataDir = process.env.OPENBUDDY_DATA_DIR || path.joi
   function createTask(input) {
     const prompt = requiredString(input.prompt, '任务内容', 100000);
     const workspaceId = input.workspaceId || store.state.workspaces[0]?.id; store.workspace(workspaceId);
-    const task = { id: createId(), title: (input.title || prompt).slice(0, 70), workspaceId, scene: ['work', 'code', 'design'].includes(input.scene) ? input.scene : 'work', status: 'idle', messages: [{ id: createId(), role: 'user', content: prompt, createdAt: now() }], events: [], artifactPaths: [], createdAt: now(), updatedAt: now(), model: typeof input.model === 'string' ? input.model : '', expertId: input.expertId || '', skillIds: Array.isArray(input.skillIds) ? input.skillIds.filter(x => typeof x === 'string') : [], mode: input.mode === 'readOnly' ? 'readOnly' : 'default', archived: false };
+    const task = { id: createId(), title: (input.title || prompt).slice(0, 70), workspaceId, scene: ['work', 'code', 'design'].includes(input.scene) ? input.scene : 'work', status: 'idle', messages: [{ id: createId(), role: 'user', content: prompt, createdAt: now() }], events: [], artifactPaths: [], createdAt: now(), updatedAt: now(), model: typeof input.model === 'string' && input.model ? input.model : publicProvider(store.state.settings, { providerConfig: store.modelProviders }).model || '', expertId: input.expertId || '', skillIds: Array.isArray(input.skillIds) ? input.skillIds.filter(x => typeof x === 'string') : [], mode: input.mode === 'readOnly' ? 'readOnly' : 'default', providerId: store.modelProviders.activeId || '', archived: false };
     store.state.tasks.unshift(task); store.log('task', `创建任务：${task.title}`); notify({ type: 'tasks', taskId: task.id });
     if (input.start !== false) dispatch(task.id); return task;
   }
   app.get('/api/health', (req, res) => res.json({ ok: true, app: 'OpenBuddy', version: '1.0.0' }));
-  app.get('/api/state', (req, res) => res.json({ ...store.state, provider: publicProvider(store.state.settings) }));
+  app.get('/api/state', (req, res) => res.json({ ...store.state, provider: publicProvider(store.state.settings, { providerConfig: store.modelProviders }) }));
+  const safeProvider = (candidate, { requireModel = true } = {}) => {
+    const hasNewKey = typeof candidate.apiKey === 'string' && Boolean(candidate.apiKey.trim());
+    const existing = candidate.id ? store.modelProviders.providers.find(item => item.id === candidate.id) : null;
+    if (candidate.id && !existing) throw new Error('模型配置不存在或已删除');
+    candidate = { ...existing, ...candidate };
+    const preset = PROVIDER_PRESETS.find(item => item.id === candidate.preset);
+    const name = String(candidate.name || preset?.name || '').trim().slice(0, 80);
+    const rawBaseUrl = String(candidate.baseUrl || preset?.baseUrl || '').trim();
+    const apiKey = String(candidate.apiKey || existing?.apiKey || '').trim();
+    const model = String(candidate.model || '').trim();
+    let url; try { url = new URL(rawBaseUrl); } catch { throw new Error('API 地址格式无效'); }
+    if (!name || (requireModel && !model) || model.length > 200 || !apiKey || apiKey.length > 1000 || /[\r\n]/.test(apiKey)) throw new Error('请填写有效的供应商名称、API Key 和模型 ID');
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('API 地址必须是无内嵌凭据的 HTTP(S) 地址');
+    const baseUrl = url.toString().replace(/\/+$/, '');
+    if (existing && (existing.baseUrl !== baseUrl || existing.preset !== candidate.preset) && !hasNewKey) throw new Error('更换 API 地址或供应商时，请重新输入对应的 API Key');
+    if (candidate.protocol && !['responses', 'chat_completions'].includes(candidate.protocol)) throw new Error('不支持的模型协议');
+    return { id: existing?.id || createId(), preset: preset?.id || 'custom', name, baseUrl, apiKey, model, protocol: candidate.protocol === 'responses' ? 'responses' : 'chat_completions', createdAt: existing?.createdAt || now() };
+  };
+  app.get('/api/providers/catalog', (req, res) => res.json(PROVIDER_PRESETS));
+  app.get('/api/providers', (req, res) => res.json(publicManagedProviders(store.modelProviders)));
+  app.post('/api/providers/test', async (req, res) => {
+    const candidate = safeProvider(req.body), started = Date.now();
+    const response = await requestResponse({ provider: candidate, model: candidate.model, input: [{ role: 'user', content: 'Only reply with OK.' }], instructions: 'Connection test. Reply OK.', tools: [] });
+    res.json({ ok: true, model: candidate.model, latencyMs: Date.now() - started, text: redactSecrets(response.text, [candidate.apiKey]).slice(0, 100) });
+  });
+  app.post('/api/providers/models', async (req, res) => {
+    const provider = req.body.providerId ? store.modelProviders.providers.find(item => item.id === req.body.providerId) : safeProvider(req.body, { requireModel: false });
+    if (!provider) throw new Error('模型供应商不存在');
+    const response = await fetch(provider.baseUrl.replace(/\/(?:chat\/completions|responses)$/i, '') + '/models', { headers: { Authorization: `Bearer ${provider.apiKey}` }, redirect: 'error', signal: AbortSignal.timeout(20000) });
+    if (!response.ok) throw new Error(`读取模型列表失败（HTTP ${response.status}）；你也可以手动填写模型 ID`);
+    const body = await response.json();
+    const source = body.data || body.models;
+    if (!Array.isArray(source)) throw new Error('服务未返回模型数组，请手动输入模型 ID');
+    const models = [...new Set(source.map(item => typeof item === 'string' ? item : item?.id || item?.name).filter(item => typeof item === 'string' && item.length <= 200 && item !== provider.apiKey))].slice(0, 500);
+    res.json({ models });
+  });
+  app.post('/api/providers', (req, res) => {
+    const provider = safeProvider({ ...req.body, id: undefined }); store.modelProviders.providers.push(provider); store.saveModelProviders();
+    store.log('provider', `添加模型供应商：${provider.name}`); notify({ type: 'providers' }); res.status(201).json(publicManagedProviders({ providers: [provider] }).providers[0]);
+  });
+  app.patch('/api/providers/:id', (req, res) => {
+    const provider = safeProvider({ ...req.body, id: req.params.id });
+    const index = store.modelProviders.providers.findIndex(item => item.id === provider.id);
+    store.modelProviders.providers[index] = provider; store.saveModelProviders();
+    if (store.modelProviders.activeId === provider.id) { store.state.settings.model = provider.model; store.save(); }
+    notify({ type: 'providers' }); res.json(publicManagedProviders({ providers: [provider] }).providers[0]);
+  });
+  app.post('/api/providers/local', (req, res) => {
+    store.modelProviders.activeId = null; store.state.settings.model = ''; store.saveModelProviders(); store.save();
+    notify({ type: 'providers' }); res.json({ ok: true });
+  });
+  app.post('/api/providers/:id/activate', (req, res) => {
+    const provider = store.modelProviders.providers.find(item => item.id === req.params.id); if (!provider) throw new Error('模型供应商不存在');
+    store.modelProviders.activeId = provider.id; store.state.settings.model = provider.model; store.saveModelProviders(); store.save();
+    notify({ type: 'providers' }); res.json(publicProvider(store.state.settings, { providerConfig: store.modelProviders }));
+  });
+  app.delete('/api/providers/:id', (req, res) => {
+    const provider = store.modelProviders.providers.find(item => item.id === req.params.id); if (!provider) throw new Error('模型供应商不存在');
+    store.modelProviders.providers = store.modelProviders.providers.filter(item => item.id !== provider.id);
+    if (store.modelProviders.activeId === provider.id) { store.modelProviders.activeId = null; store.state.settings.model = ''; store.save(); }
+    store.saveModelProviders(); notify({ type: 'providers' }); res.json({ ok: true });
+  });
   app.get('/api/events', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders();
     subscribers.add(res); res.write('event: change\ndata: {"type":"connected"}\n\n');
@@ -167,11 +229,15 @@ export function createApp({ dataDir = process.env.OPENBUDDY_DATA_DIR || path.joi
     for (const key of ['memory', 'customInstructions', 'model']) if (update[key] !== undefined && (typeof update[key] !== 'string' || update[key].length > 50000)) throw new Error('配置内容无效或过长');
     if (update.maxSteps !== undefined && (!Number.isInteger(Number(update.maxSteps)) || Number(update.maxSteps) < 1 || Number(update.maxSteps) > 40)) throw new Error('步骤上限应在 1～40 之间');
     if (update.maxSteps !== undefined) update.maxSteps = Number(update.maxSteps);
-    Object.assign(store.state.settings, update); store.save(); notify({ type: 'settings' }); res.json(store.state.settings);
+    Object.assign(store.state.settings, update);
+    const active = store.modelProviders.providers.find(item => item.id === store.modelProviders.activeId);
+    if (active && update.model !== undefined) active.model = update.model;
+    if (active && update.model !== undefined) store.saveModelProviders();
+    store.save(); notify({ type: 'settings' }); res.json(store.state.settings);
   });
   app.post('/api/provider/test', async (req, res) => {
     const start = Date.now(); const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 90000);
-    try { const result = await requestResponse({ input: [{ role: 'user', content: 'Only reply with OK.' }], tools: [], model: store.state.settings.model || undefined, signal: controller.signal, instructions: 'This is a connection test. Reply OK.' }); res.json({ ok: true, model: publicProvider(store.state.settings).model, latencyMs: Date.now() - start, text: result.text }); }
+    try { const result = await requestResponse({ provider: loadProvider(store.state.settings, { providerConfig: store.modelProviders }), input: [{ role: 'user', content: 'Only reply with OK.' }], tools: [], model: store.state.settings.model || undefined, signal: controller.signal, instructions: 'This is a connection test. Reply OK.' }); res.json({ ok: true, model: publicProvider(store.state.settings, { providerConfig: store.modelProviders }).model, latencyMs: Date.now() - start, text: redactSecrets(result.text, [loadProvider(store.state.settings, { providerConfig: store.modelProviders }).apiKey]).slice(0, 100) }); }
     finally { clearTimeout(timeout); }
   });
   app.get('/api/search', (req, res) => {
@@ -186,7 +252,8 @@ export function createApp({ dataDir = process.env.OPENBUDDY_DATA_DIR || path.joi
     else res.status(503).send('请先执行 npm run build，或使用 npm run dev 启动前端。');
   });
   app.use((err, req, res, next) => {
-    const text = String(err.message || '操作失败').replace(/Bearer\s+\S+|sk-[\w-]{8,}/gi, '[已隐藏]');
+    const secrets = [...store.modelProviders.providers.map(provider => provider.apiKey), req.body?.apiKey].filter(value => typeof value === 'string');
+    const text = redactSecrets(err.message || '操作失败', secrets).replace(/Bearer\s+\S+|sk-[\w-]{8,}/gi, '[已隐藏]');
     if (!res.headersSent) res.status(err.status || 400).json({ error: text.slice(0, 800) });
   });
   const timer = setInterval(() => {

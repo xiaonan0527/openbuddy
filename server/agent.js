@@ -58,7 +58,7 @@ async function fetchPage(raw, signal) {
 
 function shellCommand(workspace, command, timeoutSeconds, signal) {
   if (typeof command !== 'string' || !command.trim() || command.length > 10000) throw new Error('Shell 命令不能为空或过长');
-  if (/(?:\.codex|\.ssh|\.aws|\.gnupg|\.env\b|config\.local\.toml|auth\.json|credentials|OPENAI_API_KEY|OPENBUDDY_API_KEY|experimental_bearer_token|\/etc\/|\/Users\/|~\/)/i.test(command)) throw new Error('Shell 命令涉及受保护配置或工作空间外路径');
+  if (/(?:\.codex|\.ssh|\.aws|\.gnupg|\.env\b|config\.local\.toml|model-providers\.json|auth\.json|credentials|OPENAI_API_KEY|OPENBUDDY_API_KEY|experimental_bearer_token|\/etc\/|\/Users\/|~\/)/i.test(command)) throw new Error('Shell 命令涉及受保护配置或工作空间外路径');
   const directory = resolveWorkspacePath(workspace, '.');
   return new Promise((resolve, reject) => {
     const child = spawn('/bin/sh', ['-c', command], { cwd: directory, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: process.env.PATH || '/usr/bin:/bin', HOME: path.join(directory, '.openbuddy-home'), LANG: 'en_US.UTF-8', TMPDIR: '/tmp' } });
@@ -192,9 +192,9 @@ ${skills.map(s => `已启用技能：${s.name}\n${s.instructions}`).join('\n\n')
     task.status = 'running'; task.error = ''; publish(task);
     let assistant;
     try {
-      const provider = loadProvider(store.state.settings), sanitize = value => redactSecrets(value, [provider.apiKey]);
-      const input = task.runState?.input || task.messages.filter(m => !m.interrupted && m.content?.trim()).map(m => ({ role: m.role, content: sanitize(m.content) }));
-      task.runState ||= { input, pendingCalls: [], cursor: 0, turn: 0, userCount: task.messages.filter(m => m.role === 'user').length };
+      const provider = loadProvider(store.state.settings, { providerConfig: store.modelProviders, providerId: task.providerId ?? store.modelProviders?.activeId }), sanitize = value => redactSecrets(value, [provider.apiKey]);
+      const input = task.runState?.input || (task.completedContext?.input ? JSON.parse(sanitize(JSON.stringify(task.completedContext.input))) : task.messages.filter(m => !m.interrupted && m.content?.trim()).map(m => ({ role: m.role, content: sanitize(m.content) })));
+      task.runState ||= { input, pendingCalls: [], cursor: 0, turn: 0, userCount: task.completedContext?.userCount ?? task.messages.filter(m => m.role === 'user').length };
       task.runState.input = input;
       const checkpoint = () => { task.runState.input = input; store.save(); };
       const definitions = [...BUILTIN_TOOLS.filter(t => task.mode !== 'readOnly' || !MUTATING.has(t.name)), ...(task.mode !== 'readOnly' ? connectors.getTools() : [])];
@@ -234,6 +234,9 @@ ${skills.map(s => `已启用技能：${s.name}\n${s.instructions}`).join('\n\n')
               input.push({ role: 'user', content: `运行验收发现计划仍有未完成步骤：${unfinished.map(item => `${item.id} ${item.status} ${item.title}`).join('；')}。请继续执行，完成后逐步更新计划状态，再给出结论。不得仅将步骤标为完成来绕过实际工作。` });
               task.runState.input = input; checkpoint(); continue;
             }
+            const finalOutput = JSON.parse(sanitize(JSON.stringify(response.output)));
+            task.completedContext = { input: [...input, ...finalOutput], userCount: task.runState.userCount };
+            (task.executionHistory ||= []).push({ type: 'model_output', createdAt: now(), output: finalOutput });
             task.runState = null; task.status = 'completed'; addEvent(task, 'complete', `任务已完成${task.artifactPaths?.length ? `；已核验 ${task.artifactPaths.length} 个产物存在且可读取` : ''}`); store.log('task', `完成任务：${task.title}`); return;
           }
           const safeOutput = JSON.parse(sanitize(JSON.stringify(response.output)));
@@ -272,7 +275,7 @@ ${skills.map(s => `已启用技能：${s.name}\n${s.instructions}`).join('\n\n')
     } catch (error) {
       const stopped = state.controller.signal.aborted;
       let safe = error.message || '任务执行失败';
-      try { safe = redactSecrets(safe, [loadProvider(store.state.settings).apiKey]); } catch { safe = '无法连接本机模型配置，请检查设置。'; }
+      try { safe = redactSecrets(safe, [loadProvider(store.state.settings, { providerConfig: store.modelProviders, providerId: task.providerId ?? store.modelProviders?.activeId }).apiKey]); } catch { /* Keep the configuration error; it contains no credential. */ }
       task.status = stopped ? 'stopped' : 'failed'; task.error = stopped ? '任务已停止' : safe;
       if (assistant?.content && !task.messages.includes(assistant)) task.messages.push(assistant);
       if (assistant && task.messages.includes(assistant) && !assistant.content) task.messages = task.messages.filter(m => m !== assistant);

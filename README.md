@@ -6,7 +6,7 @@
 
 ## 运行
 
-需要 Node.js 22 或更新版本，以及支持 Responses API 的模型服务。仓库不包含任何可用密钥、个人 API 地址、会话或工作空间数据。
+需要 Node.js 22 或更新版本，以及支持 OpenAI Responses 或 Chat Completions 兼容协议的模型服务。仓库不包含任何可用密钥、个人 API 地址、会话或工作空间数据。
 
 ```sh
 git clone https://github.com/xiaonan0527/openbuddy.git
@@ -40,7 +40,13 @@ npm run package:mac
 
 ## 模型配置
 
-复制 [config.example.toml](config.example.toml) 为 `config.local.toml`，把 `https://api.example.com/v1`、`YOUR_MODEL_ID` 替换为自己的服务与模型。模板默认从环境变量 `OPENBUDDY_API_KEY` 读取密钥。桌面版通常不会继承终端环境，可将同一模板保存在 `~/.config/openbuddy/config.toml`，在这个仅本机使用的文件中，用 `experimental_bearer_token = "你的密钥"` 替换 `env_key`。
+可以复制 [config.example.toml](config.example.toml) 为 `config.local.toml`，或在设置 → 模型中添加供应商。内置智谱开放平台、Kimi 中国版、MiniMax 中国版、DeepSeek 和自定义 OpenAI 兼容服务。添加页可以读取服务端模型列表；若供应商未开放列表接口，也可手动输入模型 ID。
+
+在模型设置中填入供应商官方 Base URL、API Key 和模型 ID，先测试连接，再保存并切换。不同账号套餐可能使用不同地址或密钥，请按该供应商当前控制台/文档填写。
+
+添加的密钥单独保存在本机应用数据目录的 `model-providers.json`，文件权限限制为仅当前用户读写；不会写入 `state.json`、返回给浏览器或进入 GitHub。应用请求中会将提示词和工具结果发送给你选择的供应商。
+
+传统配置模板把 `https://api.example.com/v1`、`YOUR_MODEL_ID` 替换为自己的服务与模型。模板默认从环境变量 `OPENBUDDY_API_KEY` 读取密钥。桌面版通常不会继承终端环境，可将同一模板保存在 `~/.config/openbuddy/config.toml`，在这个仅本机使用的文件中，用 `experimental_bearer_token = "你的密钥"` 替换 `env_key`。
 
 配置按以下优先级读取：
 
@@ -54,7 +60,7 @@ npm run package:mac
 
 真实配置被 Git 和桌面打包规则排除。密钥只由后端读取，不通过 `/api/state` 返回给界面；模型和服务地址会在本机设置页显示。不同来源的配置不会借用 Codex 账户的 `auth.json` 去认证自定义 API。
 
-如果连接失败，检查服务是否支持 Responses API、模型名称、密钥权限和网络。不要在聊天、截图或日志中粘贴密钥。密钥读取与协议适配见 `server/provider.js`。
+如果连接失败，检查服务是否支持所选协议、Base URL、模型名称、密钥权限和网络。Chat Completions 模型支持流式文本与工具调用；带推理内容的工具轮次会保留 `reasoning_content`。不同供应商的模型能力、上下文长度、工具调用格式、区域地址、计费和权限仍有差异，连接成功不保证所有工具能力完全一致。不要在聊天、截图或日志中粘贴密钥。密钥读取与协议适配见 `server/provider.js`。
 
 ## 第一次使用
 

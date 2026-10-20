@@ -8,7 +8,16 @@ export class Store {
   constructor(directory) {
     this.directory = path.resolve(directory);
     fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(this.directory, 0o700); } catch { /* Platform may not expose POSIX modes. */ }
     this.file = path.join(this.directory, 'state.json');
+    this.modelProvidersFile = path.join(this.directory, 'model-providers.json');
+    if (fs.existsSync(this.modelProvidersFile) && fs.lstatSync(this.modelProvidersFile).isSymbolicLink()) throw new Error('模型配置文件不能是符号链接');
+    if (fs.existsSync(this.modelProvidersFile)) {
+      try { this.modelProviders = JSON.parse(fs.readFileSync(this.modelProvidersFile, 'utf8')); }
+      catch { throw new Error('本机模型配置损坏，请从备份恢复'); }
+      if (!Array.isArray(this.modelProviders.providers)) throw new Error('本机模型配置损坏，请从备份恢复');
+    } else this.modelProviders = { activeId: null, providers: [] };
+    if (fs.existsSync(this.modelProvidersFile)) try { fs.chmodSync(this.modelProvidersFile, 0o600); } catch { /* Platform may not expose POSIX modes. */ }
     const workspacePath = path.join(this.directory, 'workspaces/default');
     fs.mkdirSync(workspacePath, { recursive: true, mode: 0o700 });
     if (fs.existsSync(this.file)) {
@@ -18,7 +27,10 @@ export class Store {
       const seed = createSeed({ workspacePath });
       for (const key of Object.keys(seed)) if (!(key in this.state)) this.state[key] = seed[key];
       this.state.capabilities = seed.capabilities;
-      for (const task of this.state.tasks) for (const step of task.plan || []) step.id ||= createId();
+      for (const task of this.state.tasks) {
+        task.providerId ??= '';
+        for (const step of task.plan || []) step.id ||= createId();
+      }
       for (const task of this.state.tasks) if (['running', 'awaiting_approval'].includes(task.status)) {
         task.status = 'stopped'; task.error = '应用重启，任务已停止。可以重新发送消息继续。';
         const partial = task.messages?.find(m => m.id === task.runState?.streamingMessageId);
@@ -37,6 +49,12 @@ export class Store {
     const tmp = `${this.file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, this.file);
+  }
+  saveModelProviders() {
+    const tmp = `${this.modelProvidersFile}.${randomUUID()}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(this.modelProviders, null, 2), { mode: 0o600, flag: 'wx' });
+    fs.renameSync(tmp, this.modelProvidersFile);
+    try { fs.chmodSync(this.modelProvidersFile, 0o600); } catch { /* Platform may not expose POSIX modes. */ }
   }
   log(type, message) {
     this.state.activities.unshift({ id: createId(), createdAt: now(), type, message });

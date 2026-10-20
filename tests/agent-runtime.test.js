@@ -148,6 +148,28 @@ test('a remaining plan prevents a model final answer from completing the task', 
   assert.equal(task.status, 'failed'); assert.match(task.error, /计划仍未完成/);
 });
 
+test('completed chat tasks retain reasoning and tools for a later user turn with their original provider', async () => {
+  const { agent, store, task } = setup();
+  const profile = { id: 'chat-provider', preset: 'kimi-cn', name: 'test', baseUrl: 'https://api.moonshot.cn/v1', apiKey: 'fixture-chat-key', model: 'fixture-model', protocol: 'chat_completions' };
+  store.modelProviders = { activeId: profile.id, providers: [profile] }; task.providerId = profile.id;
+  let count = 0;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), 'https://api.moonshot.cn/v1/chat/completions');
+    const body = JSON.parse(options.body); count++;
+    if (count === 3) {
+      assert.equal(body.messages.at(-1).content, '继续分析');
+      assert.ok(body.messages.some(m => m.role === 'assistant' && m.reasoning_content === 'reasoning-saved'));
+    }
+    const delta = count === 1 ? { reasoning_content: 'reasoning-saved', tool_calls: [{ index: 0, id: 'read-dir', function: { name: 'list_files', arguments: '{"path":"."}' } }] } : { content: '完成分析', reasoning_content: 'final-reasoning' };
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: count === 1 ? 'tool_calls' : 'stop' }] })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+  };
+  await agent.run(task.id); assert.equal(task.status, 'completed');
+  // Selecting another default cannot silently send the old task elsewhere.
+  store.modelProviders.activeId = 'another-provider';
+  task.messages.push({ id: 'follow-up', role: 'user', content: '继续分析' });
+  await agent.run(task.id); assert.equal(task.status, 'completed'); assert.equal(count, 3);
+});
+
 test('truncated model stream fails rather than recording fake success', async () => {
   globalThis.fetch = async () => new Response(`data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'partial' })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
   await assert.rejects(requestResponse({ input: 'test' }), /中断/);

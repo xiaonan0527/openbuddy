@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
-const BLOCKED = /^(?:\.env(?:\..*)?|config\.local\.toml|\.ssh|\.aws|\.codex|\.workbuddy|\.claude|\.gemini|\.hermes|\.gnupg|\.npmrc|\.netrc|auth\.json|credentials(?:\.json)?|secrets?(?:\..*)?)$/i;
+const BLOCKED = /^(?:\.env(?:\..*)?|config\.local\.toml|\.ssh|\.aws|\.codex|\.workbuddy|\.claude|\.gemini|\.hermes|\.gnupg|\.npmrc|\.netrc|model-providers\.json|auth\.json|credentials(?:\.json)?|secrets?(?:\..*)?)$/i;
 const TEXT_LIMIT = 2 * 1024 * 1024;
 export function resolveWorkspacePath(workspace, relative = '.', { write = false } = {}) {
   if (!workspace?.path) throw new Error('工作空间不存在');

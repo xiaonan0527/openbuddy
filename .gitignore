@@ -17,3 +17,6 @@ coverage/
 *.pfx
 *.mobileprovision
 *.log
+
+model-providers.json
+model-providers.json.*.tmp

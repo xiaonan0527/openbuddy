@@ -4,7 +4,7 @@ import fs from 'node:fs';
 // Inspect the actual Git release set, never ignored local configuration/data.
 const files = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean);
 if (!files.length) throw new Error('No tracked files: stage the intended source before checking.');
-const forbidden = /(?:^|\/)(?:node_modules|\.data|dist|release(?:-final)?|\.codex|\.claude|\.ssh|\.aws)(?:\/|$)|(?:^|\/)(?:\.env(?!\.example$)(?:\..*)?|config\.local\.toml|auth\.json|credentials\.json|\.DS_Store)$|\.(?:pem|key|p12|pfx|log)$/i;
+const forbidden = /(?:^|\/)(?:node_modules|\.data|dist|release(?:-final)?|\.codex|\.claude|\.ssh|\.aws)(?:\/|$)|(?:^|\/)(?:\.env(?!\.example$)(?:\..*)?|config\.local\.toml|model-providers\.json(?:\..*\.tmp)?|auth\.json|credentials\.json|\.DS_Store)$|\.(?:pem|key|p12|pfx|log)$/i;
 const patterns = [
   ['private-key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
   ['provider-token', /\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[A-Z0-9]{16})\b/],
